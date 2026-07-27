@@ -82,6 +82,24 @@ jobs:
             exit 1
           fi
 
+      - name: Validate private source tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git -C control rev-parse HEAD)"
+          tag_object="$(gh api "repos/fireunix-app/shadow-control/git/ref/tags/${RELEASE_TAG}")"
+          tag_sha="$(jq -r '.object.sha' <<<"${tag_object}")"
+          if [[ "$(jq -r '.object.type' <<<"${tag_object}")" == "tag" ]]; then
+            tag_sha="$(gh api "repos/fireunix-app/shadow-control/git/tags/${tag_sha}" --jq '.object.sha')"
+          fi
+          if [[ "${source_sha}" != "${tag_sha}" ]]; then
+            echo "::error::Release tag does not match the private source revision."
+            exit 1
+          fi
+
       - name: Build private frontend
         shell: bash
         run: |
