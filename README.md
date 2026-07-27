@@ -9,3 +9,6 @@ frontend source maps, and project build directories are never published or
 cached. Release archives contain the compiled control binary and runtime
 assets only.
 
+GitHub Releases are written back to the private control repository through a
+separate single-repository write token. This public repository never hosts
+Releases.

@@ -24,7 +24,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ inputs.version }}
@@ -159,21 +159,24 @@ jobs:
         if: inputs.publish
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_PAT }}
           RELEASE_TAG: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.control_ref }}
+          TARGET_REPOSITORY: fireunix-app/shadow-control
         run: |
           set -euo pipefail
+          : "${GH_TOKEN:?RELEASE_REPO_PAT is not configured}"
           assets=(dist/*.tar.gz dist/SHA256SUMS)
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          if gh release view "${RELEASE_TAG}" --repo "${TARGET_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" "${assets[@]}" \
               --clobber \
-              --repo "${GITHUB_REPOSITORY}"
+              --repo "${TARGET_REPOSITORY}"
             exit 0
           fi
 
           gh release create "${RELEASE_TAG}" \
             "${assets[@]}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
+            --repo "${TARGET_REPOSITORY}" \
+            --target "${SOURCE_REF}" \
             --title "Shadow Control ${RELEASE_TAG}" \
             --notes "Control server and embedded frontend built from configured private source refs."
