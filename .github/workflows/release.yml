@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      control_ref:
+        description: "Private shadow-control branch, tag, or commit"
+        required: true
+        default: "main"
+        type: string
+      web_ref:
+        description: "Private shadow-web branch, tag, or commit"
+        required: true
+        default: "main"
+        type: string
+      version:
+        description: "Release version, for example v0.1.0"
+        required: true
+        type: string
+      publish:
+        description: "Publish a GitHub Release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build control server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out public builder
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: builder
+
+      - name: Check out private control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: fireunix-app/shadow-control
+          ref: ${{ inputs.control_ref }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+          path: control
+
+      - name: Check out private web source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: fireunix-app/shadow-web
+          ref: ${{ inputs.web_ref }}
+          token: ${{ secrets.WEB_SOURCE_PAT }}
+          persist-credentials: false
+          path: web
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.2"
+          cache: false
+
+      - name: Validate release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release version: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: Build private frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix web ci --no-audit --no-fund
+          npm --prefix web run build
+          test -f web/dist/index.html
+          if find web/dist -type f -name '*.map' -print -quit | grep -q .; then
+            echo "source maps are not allowed in the embedded frontend" >&2
+            exit 1
+          fi
+          rm -rf control/api/web/dist
+          cp -R web/dist control/api/web/dist
+          test -d control/api/web/dist/assets
+          test -d control/api/web/dist/os
+
+      - name: Build and package control server
+        shell: bash
+        env:
+          VERSION_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION_TAG#v}"
+          archive="shadow-control-${version}-linux-amd64"
+          package_dir="dist/${archive}"
+
+          cd control
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "../dist/shadow-control" .
+          cd ..
+
+          mkdir -p "${package_dir}"
+          install -m 0755 dist/shadow-control "${package_dir}/shadow-control"
+          install -m 0644 builder/README.md "${package_dir}/README.md"
+          tar -C dist -czf "dist/${archive}.tar.gz" "${archive}"
+          sha256sum "dist/${archive}.tar.gz" > dist/SHA256SUMS
+          rm -rf control web "${package_dir}" dist/shadow-control
+
+      - name: Store release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shadow-control-release
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish GitHub Release
+        if: inputs.publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          assets=(dist/*.tar.gz dist/SHA256SUMS)
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+            exit 0
+          fi
+
+          gh release create "${RELEASE_TAG}" \
+            "${assets[@]}" \
+            --target "${GITHUB_SHA}" \
+            --title "Shadow Control ${RELEASE_TAG}" \
+            --notes "Control server and embedded frontend built from configured private source refs."
