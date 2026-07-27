@@ -12,3 +12,4 @@ assets only.
 GitHub Releases are written back to the private control repository through a
 separate single-repository write token. This public repository never hosts
 Releases.
+The requested release tag must already exist in the private control repository.
