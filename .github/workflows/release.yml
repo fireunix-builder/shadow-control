@@ -86,17 +86,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm --prefix web ci --no-audit --no-fund
-          npm --prefix web run build
-          test -f web/dist/index.html
-          if find web/dist -type f -name '*.map' -print -quit | grep -q .; then
-            echo "source maps are not allowed in the embedded frontend" >&2
-            exit 1
+          private_log="${RUNNER_TEMP}/private-frontend-build.log"
+          set +e
+          (
+            set -euo pipefail
+            npm --prefix web ci --no-audit --no-fund
+            npm --prefix web run build
+            test -f web/dist/index.html
+            if find web/dist -type f -name '*.map' -print -quit | grep -q .; then
+              exit 1
+            fi
+            rm -rf control/api/web/dist
+            cp -R web/dist control/api/web/dist
+            test -d control/api/web/dist/assets
+            test -d control/api/web/dist/os
+          ) >"${private_log}" 2>&1
+          status=$?
+          set -e
+          rm -f "${private_log}"
+          if (( status != 0 )); then
+            echo "::error::Private frontend build failed; detailed output was intentionally withheld."
+            exit "${status}"
           fi
-          rm -rf control/api/web/dist
-          cp -R web/dist control/api/web/dist
-          test -d control/api/web/dist/assets
-          test -d control/api/web/dist/os
 
       - name: Build and package control server
         shell: bash
@@ -104,23 +115,35 @@ jobs:
           VERSION_TAG: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          version="${VERSION_TAG#v}"
-          archive="shadow-control-${version}-linux-amd64"
-          package_dir="dist/${archive}"
+          private_log="${RUNNER_TEMP}/private-control-build.log"
+          set +e
+          (
+            set -euo pipefail
+            version="${VERSION_TAG#v}"
+            archive="shadow-control-${version}-linux-amd64"
+            package_dir="dist/${archive}"
 
-          cd control
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -trimpath \
-            -ldflags="-s -w" \
-            -o "../dist/shadow-control" .
-          cd ..
+            cd control
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+              -trimpath \
+              -ldflags="-s -w" \
+              -o "../dist/shadow-control" .
+            cd ..
 
-          mkdir -p "${package_dir}"
-          install -m 0755 dist/shadow-control "${package_dir}/shadow-control"
-          install -m 0644 builder/README.md "${package_dir}/README.md"
-          tar -C dist -czf "dist/${archive}.tar.gz" "${archive}"
-          sha256sum "dist/${archive}.tar.gz" > dist/SHA256SUMS
-          rm -rf control web "${package_dir}" dist/shadow-control
+            mkdir -p "${package_dir}"
+            install -m 0755 dist/shadow-control "${package_dir}/shadow-control"
+            install -m 0644 builder/README.md "${package_dir}/README.md"
+            tar -C dist -czf "dist/${archive}.tar.gz" "${archive}"
+            sha256sum "dist/${archive}.tar.gz" > dist/SHA256SUMS
+            rm -rf control web "${package_dir}" dist/shadow-control
+          ) >"${private_log}" 2>&1
+          status=$?
+          set -e
+          rm -f "${private_log}"
+          if (( status != 0 )); then
+            echo "::error::Private control build failed; detailed output was intentionally withheld."
+            exit "${status}"
+          fi
 
       - name: Store release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

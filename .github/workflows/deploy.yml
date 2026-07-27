@@ -65,39 +65,62 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm --prefix web ci --no-audit --no-fund
-          npm --prefix web run build
-          test -f web/dist/index.html
-          test -d web/dist/assets
-          test -d web/dist/os
-          if find web/dist -type f -name '*.map' -print -quit | grep -q .; then
-            echo "source maps are not allowed in the embedded frontend" >&2
-            exit 1
-          fi
+          private_log="${RUNNER_TEMP}/private-frontend-build.log"
+          set +e
+          (
+            set -euo pipefail
+            npm --prefix web ci --no-audit --no-fund
+            npm --prefix web run build
+            test -f web/dist/index.html
+            test -d web/dist/assets
+            test -d web/dist/os
+            if find web/dist -type f -name '*.map' -print -quit | grep -q .; then
+              exit 1
+            fi
 
-          rm -rf control/api/web/dist
-          cp -R web/dist control/api/web/dist
+            rm -rf control/api/web/dist
+            cp -R web/dist control/api/web/dist
+          ) >"${private_log}" 2>&1
+          status=$?
+          set -e
+          rm -f "${private_log}"
+          if (( status != 0 )); then
+            echo "::error::Private frontend build failed; detailed output was intentionally withheld."
+            exit "${status}"
+          fi
 
       - name: Build deployment files
         shell: bash
         run: |
           set -euo pipefail
-          test -s "control/config/${RUNENV}.toml"
-          test -d control/captcha
-          find control/captcha -maxdepth 1 -type f \
-            \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
-            -print -quit | grep -q .
-
-          mkdir -p deploy
+          private_log="${RUNNER_TEMP}/private-control-build.log"
+          set +e
           (
-            cd control
-            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-              -trimpath \
-              -ldflags="-s -w" \
-              -o ../deploy/shadow-control .
-            tar -C captcha -czf ../deploy/captcha.tar.gz .
-          )
-          install -m 0600 "control/config/${RUNENV}.toml" "deploy/${RUNENV}.toml"
+            set -euo pipefail
+            test -s "control/config/${RUNENV}.toml"
+            test -d control/captcha
+            find control/captcha -maxdepth 1 -type f \
+              \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
+              -print -quit | grep -q .
+
+            mkdir -p deploy
+            (
+              cd control
+              CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+                -trimpath \
+                -ldflags="-s -w" \
+                -o ../deploy/shadow-control .
+              tar -C captcha -czf ../deploy/captcha.tar.gz .
+            )
+            install -m 0600 "control/config/${RUNENV}.toml" "deploy/${RUNENV}.toml"
+          ) >"${private_log}" 2>&1
+          status=$?
+          set -e
+          rm -f "${private_log}"
+          if (( status != 0 )); then
+            echo "::error::Private control build failed; detailed output was intentionally withheld."
+            exit "${status}"
+          fi
 
       - name: Deploy via jump host
         shell: bash
