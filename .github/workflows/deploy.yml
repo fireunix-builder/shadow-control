@@ -1,0 +1,157 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      control_ref:
+        description: "Private shadow-control branch, tag, or commit"
+        required: true
+        default: "main"
+        type: string
+      web_ref:
+        description: "Private shadow-web branch, tag, or commit"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-shadow-control
+  cancel-in-progress: true
+
+env:
+  DEPLOY_DIR: /Applications/network/shadow
+  RUNENV: prod
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy control server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out private control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: fireunix-app/shadow-control
+          ref: ${{ inputs.control_ref }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+          path: control
+
+      - name: Check out private web source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: fireunix-app/shadow-web
+          ref: ${{ inputs.web_ref }}
+          token: ${{ secrets.WEB_SOURCE_PAT }}
+          persist-credentials: false
+          path: web
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.2"
+          cache: false
+
+      - name: Build private frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix web ci --no-audit --no-fund
+          npm --prefix web run build
+          test -f web/dist/index.html
+          test -d web/dist/assets
+          test -d web/dist/os
+          if find web/dist -type f -name '*.map' -print -quit | grep -q .; then
+            echo "source maps are not allowed in the embedded frontend" >&2
+            exit 1
+          fi
+
+          rm -rf control/api/web/dist
+          cp -R web/dist control/api/web/dist
+
+      - name: Build deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "control/config/${RUNENV}.toml"
+          test -d control/captcha
+          find control/captcha -maxdepth 1 -type f \
+            \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
+            -print -quit | grep -q .
+
+          mkdir -p deploy
+          (
+            cd control
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+              -trimpath \
+              -ldflags="-s -w" \
+              -o ../deploy/shadow-control .
+            tar -C captcha -czf ../deploy/captcha.tar.gz .
+          )
+          install -m 0600 "control/config/${RUNENV}.toml" "deploy/${RUNENV}.toml"
+
+      - name: Deploy via jump host
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SSH_KEY:?DEPLOY_SSH_KEY is not configured}"
+
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${HOME}/.ssh/deploy"
+          chmod 600 "${HOME}/.ssh/deploy"
+          cat > "${HOME}/.ssh/config" <<'EOF'
+          Host jump
+            HostName router.fireunix.net
+            User root
+            IdentityFile ~/.ssh/deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          Host node
+            HostName 192.168.6.14
+            User root
+            IdentityFile ~/.ssh/deploy
+            IdentitiesOnly yes
+            ProxyJump jump
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 "${HOME}/.ssh/config"
+
+          ssh node "install -d -m 700 '${DEPLOY_DIR}/config'"
+          scp deploy/shadow-control "node:${DEPLOY_DIR}/shadow-control.new"
+          scp deploy/captcha.tar.gz "node:${DEPLOY_DIR}/captcha.tar.gz.new"
+          scp "deploy/${RUNENV}.toml" "node:${DEPLOY_DIR}/config/${RUNENV}.toml.new"
+          ssh node "set -eu
+            cd '${DEPLOY_DIR}'
+            test -s 'config/${RUNENV}.toml.new'
+            rm -rf captcha.new
+            install -d -m 755 captcha.new
+            tar -xzf captcha.tar.gz.new -C captcha.new
+            find captcha.new -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) -print -quit | grep -q .
+            rm -rf captcha.old
+            if [ -d captcha ]; then mv captcha captcha.old; fi
+            mv captcha.new captcha
+            rm -rf captcha.old captcha.tar.gz.new
+            mv 'config/${RUNENV}.toml.new' 'config/${RUNENV}.toml'
+            chmod 600 'config/${RUNENV}.toml'
+            mv shadow-control.new shadow-control
+            chmod 755 shadow-control
+            systemctl show shadow-control --property=Environment --value | grep -qw 'RUNENV=${RUNENV}'
+            systemctl restart shadow-control
+            sleep 1
+            systemctl is-active shadow-control"
+
+      - name: Remove private source
+        if: always()
+        shell: bash
+        run: rm -rf control web deploy
