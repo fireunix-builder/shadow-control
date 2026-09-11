@@ -41,6 +41,17 @@ jobs:
         with:
           path: builder
 
+      - name: Verify private source access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_shadow-control_PAT }}
+        run: |
+          set -euo pipefail
+          if ! gh api --silent repos/fireunix-app/shadow-control/contents/go.mod; then
+            echo "::error::SOURCE_shadow-control_PAT cannot read the private source. Check token expiry, repository selection, and Contents read permission."
+            exit 1
+          fi
+
       - name: Check out private control source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
