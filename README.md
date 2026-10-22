@@ -10,7 +10,7 @@ cached. Release archives contain the compiled control binary and runtime
 assets only.
 
 Published archives are uploaded to Cloudflare R2 under `Control/<tag>/` (`shadow-control-<version>-linux-amd64.tar.gz` and
-`SHA256SUMS`) and `Control/latest.json` is updated, using the `R2_ACCESS_KEY_ID`,
+`SHA256SUMS`, plus a `release.json` copy of the manifest) and `Control/latest.json` is updated, using the `R2_ACCESS_KEY_ID`,
 `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET` and `R2_PUBLIC_URL` Actions
 secrets.
 

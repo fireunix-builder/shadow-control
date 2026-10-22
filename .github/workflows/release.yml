@@ -233,6 +233,13 @@ jobs:
               checksums_url: $checksums_url
             }' > dist/latest.json
 
+          # Per-version copy, as Control/v0.1.1/release.json was published.
+          aws s3 cp dist/latest.json "s3://${R2_BUCKET}/${prefix}/release.json" \
+            --endpoint-url "${endpoint}" \
+            --content-type "application/json" \
+            --cache-control "public,max-age=0,must-revalidate" \
+            --only-show-errors
+
           aws s3 cp dist/latest.json "s3://${R2_BUCKET}/Control/latest.json" \
             --endpoint-url "${endpoint}" \
             --content-type "application/json" \
