@@ -36,7 +36,7 @@ jobs:
         with:
           repository: fireunix-app/shadow-control
           ref: ${{ inputs.control_ref }}
-          token: ${{ secrets.SOURCE_REPO_PAT }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
           path: control
 
@@ -45,7 +45,7 @@ jobs:
         with:
           repository: fireunix-app/shadow-web
           ref: ${{ inputs.web_ref }}
-          token: ${{ secrets.WEB_SOURCE_PAT }}
+          ssh-key: ${{ secrets.WEB_DEPLOY_KEY }}
           persist-credentials: false
           path: web
 
